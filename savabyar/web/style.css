@@ -1,0 +1,27 @@
+:root { color-scheme: light dark; --bg: #f4f7f3; --card: #fff; --text: #20362c; --hint: #65776c; --accent: #26714e; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: Tahoma, Arial, sans-serif; line-height: 1.9; }
+main { max-width: 480px; margin: auto; padding: 32px 20px max(24px, env(safe-area-inset-bottom)); }
+.brand { font-size: 24px; font-weight: bold; }
+.eyebrow, .hint, .privacy, #purpose { color: var(--hint); }
+.eyebrow { margin: 4px 0 28px; font-size: 13px; }
+.card { padding: 24px; background: var(--card); border: 1px solid #879c8326; border-radius: 22px; box-shadow: 0 12px 40px #233d2910; }
+.label { font-size: 12px; color: var(--hint); }
+h1 { font-size: 22px; margin: 8px 0; }
+#purpose { margin: 0 0 24px; font-size: 14px; }
+label { display: block; font-weight: bold; margin-bottom: 8px; }
+.amount-field { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border: 1px solid #8eaa92; border-radius: 12px; }
+.amount-field:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+input { min-width: 0; width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 24px; direction: ltr; text-align: right; }
+.amount-field span { font-size: 13px; color: var(--hint); }
+.hint { font-size: 12px; min-height: 24px; }
+button { width: 100%; padding: 14px; border: 0; border-radius: 12px; background: var(--accent); color: white; font: inherit; font-weight: bold; cursor: pointer; }
+button:disabled { opacity: .55; cursor: default; }
+.intent-options { display: grid; gap: 12px; }
+.intent-options button { text-align: right; }
+.secondary { background: transparent; color: var(--accent); margin-top: 10px; padding: 8px; }
+#status { margin-bottom: 0; font-size: 13px; }
+#status.error { color: #be433a; }
+.privacy { font-size: 12px; padding: 4px 14px; }
+.notice { background: #f4d997; color: #5b420e; padding: 10px 16px; border-radius: 12px; margin-bottom: 16px; font-size: 13px; }
+@media (prefers-color-scheme: dark) { :root { --bg: #17221c; --card: #223128; --text: #edf4ee; --hint: #b5c5b8; --accent: #327b52; } }

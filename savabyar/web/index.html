@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>مشارکت در ثواب‌یار</title>
+  <script src="https://tapi.bale.ai/miniapp.js"></script>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <div class="brand">🌱 ثواب‌یار</div>
+    <p class="eyebrow">همراهی شما، سهمی در کار خیر</p>
+    <div id="test-mode" class="notice" hidden>حالت آزمایشی؛ پولی جابه‌جا نمی‌شود.</div>
+    <section id="intent-selection" class="card" hidden>
+      <h1>نیت مشارکت شما چیست؟</h1>
+      <p class="hint">یکی از زمینه‌های زیر را انتخاب کنید.</p>
+      <div class="intent-options">
+        <button type="button" data-intent="mahdavi">🌿 مشارکت در هزینه‌های مهدویت</button>
+        <button type="button" data-intent="heyat">🏴 مشارکت در هزینه‌های هیئت</button>
+        <button type="button" data-intent="unrestricted">🤲 مشارکت بدون نیت مشخص</button>
+      </div>
+    </section>
+    <section id="amount-card" class="card" hidden>
+      <span class="label">نیت مشارکت شما</span>
+      <h1 id="intent">مشارکت در ثواب‌یار</h1>
+      <p id="purpose"></p>
+      <form id="payment-form">
+        <label for="amount">مبلغ دلخواه</label>
+        <div class="amount-field">
+          <input id="amount" name="amount" type="text" inputmode="numeric" autocomplete="off" placeholder="مثلاً 50,000" required maxlength="20" aria-describedby="limits">
+          <span>تومان</span>
+        </div>
+        <p id="limits" class="hint"></p>
+        <button id="pay" type="submit" disabled>ادامه پرداخت در بله</button>
+      </form>
+      <button id="change-intent" class="secondary" type="button">تغییر نیت مشارکت</button>
+    </section>
+    <p id="status" role="status" aria-live="polite"></p>
+    <p class="privacy">پس از تأیید پرداخت، رسید تاریخ‌دار با مبلغ و نیت شما، بدون نام و اطلاعات بانکی در کانال ثواب‌یار منتشر می‌شود.</p>
+  </main>
+</body>
+</html>
