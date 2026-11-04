@@ -1,13 +1,16 @@
 """Savabyar: three intentions, Bale wallet invoices and anonymous receipts."""
 
 import argparse
+import json
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
@@ -49,6 +52,7 @@ class Config:
     provider: str
     channel: str
     username: str = 'savabyarbot'
+    webhook_url: str = ''
     minimum: int = 1000
     maximum: int = 10_000_000
     database: Path = ROOT / 'data' / 'savabyar.db'
@@ -82,6 +86,7 @@ class Config:
             provider=os.getenv('PAYMENT_PROVIDER_TOKEN', '').strip(),
             channel=os.getenv('RECEIPT_CHANNEL', '').strip(),
             username=os.getenv('BOT_USERNAME', 'savabyarbot').strip().lstrip('@'),
+            webhook_url=os.getenv('WEBHOOK_URL', '').strip(),
             minimum=int(os.getenv('MIN_AMOUNT_TOMAN', '1000')),
             maximum=int(os.getenv('MAX_AMOUNT_TOMAN', '10000000')),
             database=path if path.is_absolute() else ROOT / path,
@@ -103,6 +108,11 @@ class Config:
             url = urlsplit(cfg.miniapp_url)
             if url.scheme != 'https' or not url.hostname or url.username or url.password or url.fragment:
                 raise ValueError('MINIAPP_URL باید یک آدرس عمومی HTTPS باشد.')
+        if cfg.webhook_url:
+            url = urlsplit(cfg.webhook_url)
+            if (url.scheme != 'https' or not url.hostname or url.username or url.password
+                    or url.query or url.fragment or url.port not in (None, 443, 88)):
+                raise ValueError('WEBHOOK_URL must be a public HTTPS URL on port 443 or 88.')
         if not 1 <= cfg.miniapp_port <= 65535:
             raise ValueError('درگاه مینی‌اپ معتبر نیست.')
         if any(not 0 < item < 2**53 for item in cfg.admin_ids):
@@ -318,9 +328,6 @@ class SavabyarBot:
             if require_channel:
                 raise
             LOG.warning('Menu available; payments wait for channel access: %s', exc)
-        webhook = self.api.call('getWebhookInfo')
-        if webhook.get('url'):
-            raise ValueError('این بات وبهوک فعال دارد؛ پیش از اجرای polling، سرویس قبلی باید بررسی شود.')
         return me
 
     def handle(self, update):
@@ -515,6 +522,22 @@ class SavabyarBot:
                     self.show_screen(message['chat']['id'], 'ارسال درخواست ناموفق بود. پرداختی تأیید نشده است؛ لطفاً دوباره تلاش کنید یا /start را بفرستید.')
             self.store.set_offset(update['update_id'] + 1)
 
+    def process_webhook_update(self, update):
+        update_id = update.get('update_id') if isinstance(update, dict) else None
+        if not isinstance(update_id, int) or isinstance(update_id, bool):
+            return False
+        if update_id < self.store.offset():
+            return True
+        try:
+            self.handle(update)
+        except APIError as exc:
+            if exc.retryable:
+                LOG.warning('Temporary update failure; asking Bale to retry')
+                return False
+            LOG.error('Update %s rejected by API: %s', update_id, exc)
+        self.store.set_offset(update_id + 1)
+        return True
+
     def receipt_worker(self, stop):
         # Independent connection and HTTP session: channel outages must not hold
         # checkout confirmations behind receipt delivery requests.
@@ -527,11 +550,29 @@ class SavabyarBot:
         finally:
             store.close()
 
-    def run(self):
+    def run(self, port=8080):
         LOG.info('Savabyar started (%s)', 'TEST' if self.cfg.is_test else 'LIVE')
         stop = threading.Event()
         worker = threading.Thread(target=self.receipt_worker, args=(stop,), daemon=True)
         worker.start()
+        try:
+            if self.cfg.webhook_url:
+                self.run_webhook(port)
+            else:
+                self.run_polling(port)
+        finally:
+            stop.set()
+            worker.join(timeout=5)
+
+    def run_polling(self, port):
+        webhook = self.api.call('getWebhookInfo')
+        if webhook.get('url'):
+            self.api.call('deleteWebhook')
+            LOG.info('Removed previous webhook; starting long polling')
+        health = make_health_server(port)
+        health.timeout = 1
+        health_thread = threading.Thread(target=health.serve_forever, daemon=True)
+        health_thread.start()
         try:
             while True:
                 try:
@@ -542,8 +583,83 @@ class SavabyarBot:
                     LOG.warning('%s; retrying', exc)
                     time.sleep(3)
         finally:
-            stop.set()
-            worker.join(timeout=5)
+            health.shutdown()
+            health.server_close()
+            health_thread.join(timeout=5)
+
+    def run_webhook(self, port):
+        public_url = urlsplit(self.cfg.webhook_url)
+        secret_path = secrets.token_urlsafe(32)
+        webhook_path = public_url.path.rstrip('/') + '/webhook/' + secret_path
+        webhook_address = public_url._replace(path=webhook_path, query='', fragment='').geturl()
+        bot = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path not in ('/', '/health', '/healthz'):
+                    self.send_error(404)
+                    return
+                self.respond(200, b'SavabYar is running\n')
+
+            def do_POST(self):
+                if self.path != webhook_path:
+                    self.send_error(404)
+                    return
+                try:
+                    length = int(self.headers.get('Content-Length', '0'))
+                    if not 0 < length <= 1_000_000:
+                        self.respond(413, b'payload too large\n')
+                        return
+                    update = json.loads(self.rfile.read(length))
+                    if not bot.process_webhook_update(update):
+                        self.respond(500, b'retry\n')
+                        return
+                    self.respond(200, b'ok\n')
+                except (ValueError, json.JSONDecodeError):
+                    self.respond(400, b'invalid update\n')
+                except Exception as exc:
+                    LOG.error('Webhook handler failed: %s', type(exc).__name__)
+                    self.respond(500, b'failed\n')
+
+            def respond(self, status, body):
+                self.send_response(status)
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_):
+                pass
+
+        server = HTTPServer(('0.0.0.0', port), Handler)
+        try:
+            self.api.call('setWebhook', url=webhook_address)
+            info = self.api.call('getWebhookInfo')
+            if info.get('url') != webhook_address:
+                raise APIError('setWebhook: verification failed')
+            LOG.info('Webhook registered for host %s', public_url.hostname)
+            server.serve_forever()
+        finally:
+            server.server_close()
+
+
+def make_health_server(port):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path not in ('/', '/health', '/healthz'):
+                self.send_error(404)
+                return
+            body = b'SavabYar is running\n'
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_):
+            pass
+
+    return HTTPServer(('0.0.0.0', port), Handler)
 
 
 def main():
