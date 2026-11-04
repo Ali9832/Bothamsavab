@@ -1,4 +1,4 @@
-from bot import run
+from runflare import main as run_savabyar
 
 if __name__ == "__main__":
-    run()
+    raise SystemExit(run_savabyar())
