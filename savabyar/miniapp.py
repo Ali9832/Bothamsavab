@@ -146,7 +146,7 @@ def make_server(config, port=None):
                 if not isinstance(body, dict):
                     raise ValueError('درخواست معتبر نیست.')
                 user_id = authenticated_user(body.get('init_data'), config.token)
-                store = Store(config.database)
+                store = Store(config.database, url=config.database_url)
                 service = MiniappService(config, BaleAPI(config.token), store)
                 if path == '/api/invoice':
                     # Serialize retries of the same invoice to avoid two links.

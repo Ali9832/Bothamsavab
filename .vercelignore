@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.log
+
+# Secrets are supplied through the Vercel dashboard, never uploaded.
+.env
+.env.*
+!.env.example
+
+# Local-only data and tooling.
+data/
+savabyar/data/
+venv_win/
+.venv/
+tools/
+
+# Tests and the retired single-process runner are not part of the function.
+test_*.py
+savabyar/test_*.py

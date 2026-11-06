@@ -53,9 +53,11 @@ class Config:
     channel: str
     username: str = 'savabyarbot'
     webhook_url: str = ''
+    webhook_secret: str = ''
     minimum: int = 1000
     maximum: int = 10_000_000
     database: Path = ROOT / 'data' / 'savabyar.db'
+    database_url: str = ''
     miniapp_url: str = ''
     miniapp_host: str = '127.0.0.1'
     miniapp_port: int = 8081
@@ -73,6 +75,7 @@ class Config:
         # Explicit path: never inherit the neighbouring fund bot's .env file.
         load_dotenv(ROOT / '.env')
         path = Path(os.getenv('DATABASE_PATH', 'data/savabyar.db'))
+        database_url = os.getenv('DATABASE_URL', '').strip()
         from admin_auth import hash_password
         password = os.getenv('ADMIN_PASSWORD', '')
         encoded = ''
@@ -87,9 +90,11 @@ class Config:
             channel=os.getenv('RECEIPT_CHANNEL', '').strip(),
             username=os.getenv('BOT_USERNAME', 'savabyarbot').strip().lstrip('@'),
             webhook_url=os.getenv('WEBHOOK_URL', '').strip(),
+            webhook_secret=os.getenv('WEBHOOK_SECRET', '').strip(),
             minimum=int(os.getenv('MIN_AMOUNT_TOMAN', '1000')),
             maximum=int(os.getenv('MAX_AMOUNT_TOMAN', '10000000')),
             database=path if path.is_absolute() else ROOT / path,
+            database_url=database_url,
             miniapp_url=os.getenv('MINIAPP_URL', '').strip(),
             miniapp_host=os.getenv('MINIAPP_HOST', '127.0.0.1').strip(),
             miniapp_port=int(os.getenv('MINIAPP_PORT', '8081')),
@@ -541,7 +546,7 @@ class SavabyarBot:
     def receipt_worker(self, stop):
         # Independent connection and HTTP session: channel outages must not hold
         # checkout confirmations behind receipt delivery requests.
-        store = Store(self.cfg.database)
+        store = Store(self.cfg.database, url=self.cfg.database_url)
         worker = SavabyarBot(self.cfg, BaleAPI(self.cfg.token), store)
         try:
             while not stop.is_set():
@@ -662,16 +667,92 @@ def make_health_server(port):
     return HTTPServer(('0.0.0.0', port), Handler)
 
 
+def webhook_address(config):
+    """Public endpoint Bale must call; matches the serverless route layout."""
+    if not config.webhook_url:
+        raise ValueError('برای ثبت وبهوک، WEBHOOK_URL را روی دامنه عمومی HTTPS تنظیم کنید.')
+    return config.webhook_url.rstrip('/') + '/api/webhook'
+
+
+def register_webhook(config, api=None):
+    """Point Bale at the serverless endpoint. Safe to run repeatedly."""
+    api = api or BaleAPI(config.token)
+    address = webhook_address(config)
+    try:
+        if config.webhook_secret:
+            api.call('setWebhook', url=address, secret_token=config.webhook_secret)
+        else:
+            api.call('setWebhook', url=address)
+    except APIError as exc:
+        if not config.webhook_secret or exc.code is None or not 400 <= exc.code < 500:
+            raise
+        # Older Bale deployments ignore secret_token; fall back to the plain call.
+        LOG.warning('setWebhook rejected secret_token; retrying without it: %s', exc)
+        api.call('setWebhook', url=address)
+    info = api.call('getWebhookInfo')
+    if info.get('url') != address:
+        raise APIError('setWebhook: verification failed')
+    return info
+
+
+def delete_webhook(config):
+    api = BaleAPI(config.token)
+    api.call('deleteWebhook')
+    return api.call('getWebhookInfo')
+
+
+def serve_update(config, raw):
+    """Process one webhook update. Shared by the serverless entry point."""
+    try:
+        update = json.loads(raw)
+    except (ValueError, TypeError):
+        return 400, b'invalid update\n'
+    if not isinstance(update, dict):
+        return 400, b'invalid update\n'
+    store = Store(config.database, url=config.database_url)
+    try:
+        bot = SavabyarBot(config, BaleAPI(config.token), store)
+        if not bot.process_webhook_update(update):
+            return 500, b'retry\n'
+        try:
+            bot.flush_receipts()
+        except APIError as exc:
+            LOG.warning('Receipt flush deferred: %s', exc)
+        return 200, b'ok\n'
+    finally:
+        store.close()
+
+
+def flush_pending(config):
+    """Deliver queued receipts and alerts; used by the scheduled endpoint."""
+    store = Store(config.database, url=config.database_url)
+    try:
+        SavabyarBot(config, BaleAPI(config.token), store).flush_receipts()
+    finally:
+        store.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description='بات ثواب‌یار')
     parser.add_argument('--check', action='store_true', help='Read-only connection and channel access check')
+    parser.add_argument('--set-webhook', action='store_true',
+                        help='Register the Bale webhook on WEBHOOK_URL (serverless hosting)')
+    parser.add_argument('--delete-webhook', action='store_true', help='Remove the registered Bale webhook')
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     store = None
     miniapp_server = None
     try:
         config = Config.load()
-        store = Store(config.database)
+        if args.set_webhook or args.delete_webhook:
+            if args.set_webhook:
+                info = register_webhook(config)
+                LOG.info('Webhook registered: %s', info.get('url'))
+            else:
+                delete_webhook(config)
+                LOG.info('Webhook removed')
+            return 0
+        store = Store(config.database, url=config.database_url)
         bot = SavabyarBot(config, BaleAPI(config.token), store)
         me = bot.validate_connection(require_channel=args.check)
         LOG.info('Bot connection confirmed: @%s', me['username'])
