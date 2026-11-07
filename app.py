@@ -7,6 +7,7 @@ lives in api/webhook.py and api/cron.py so it stays in one place.
 import logging
 import os
 import sys
+from urllib.parse import urlsplit
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 for path in (ROOT, os.path.join(ROOT, 'savabyar')):
@@ -15,9 +16,43 @@ for path in (ROOT, os.path.join(ROOT, 'savabyar')):
 
 from api import cron as cron_route  # noqa: E402
 from api import webhook as webhook_route  # noqa: E402
-from bot import APIError, flush_pending, serve_update  # noqa: E402
+from bot import (  # noqa: E402
+    APIError, BaleAPI, flush_pending, register_webhook, serve_update, webhook_address)
 
 LOG = logging.getLogger('savabyar.vercel')
+_WEBHOOK_OK = False
+
+
+def failure_detail(exc):
+    """Safe, human-readable reason for the logs (never the token or URL)."""
+    if isinstance(exc, ValueError):
+        return str(exc)
+    if isinstance(exc, OSError):
+        return f'errno={exc.errno} {exc.strerror}'
+    if type(exc).__module__.startswith('psycopg'):
+        message = str(exc).splitlines()[0] if str(exc) else ''
+        password = urlsplit(os.getenv('DATABASE_URL', '')).password
+        return message.replace(password, '***') if password else message
+    return ''
+
+
+def ensure_webhook(config):
+    """Point Bale at this project's production domain; idempotent."""
+    global _WEBHOOK_OK
+    if _WEBHOOK_OK:
+        return 'ok'
+    if not config.webhook_url:
+        return 'skipped (no production domain)'
+    api = BaleAPI(config.token)
+    info = api.call('getWebhookInfo') or {}
+    if info.get('url') == webhook_address(config):
+        result = 'ok'
+    else:
+        register_webhook(config, api)
+        result = 'registered'
+        LOG.info('Bale webhook registered')
+    _WEBHOOK_OK = True
+    return result
 
 
 def _headers(environ):
@@ -67,8 +102,14 @@ def app(environ, start_response):
             LOG.warning('Update rejected, asking Bale to retry: %s', exc)
             status, body = 500, b'retry\n'
         except Exception as exc:
-            LOG.error('Webhook handler failed: %s', type(exc).__name__)
+            LOG.error('Webhook handler failed: %s %s', type(exc).__name__, failure_detail(exc))
             status, body = 500, b'failed\n'
+        else:
+            # First update on a fresh instance: make sure Bale uses the current domain.
+            try:
+                ensure_webhook(webhook_route.load_config())
+            except Exception as exc:
+                LOG.warning('Webhook check failed: %s %s', type(exc).__name__, failure_detail(exc))
         return _reply(start_response, status, body)
 
     if path == '/api/cron':
@@ -77,10 +118,23 @@ def app(environ, start_response):
         if not cron_route.authorized(headers):
             return _reply(start_response, 401, b'unauthorized\n')
         try:
-            flush_pending(cron_route.load_config())
+            config = cron_route.load_config()
+            flush_pending(config)
+            ensure_webhook(config)
         except Exception as exc:
-            LOG.error('Scheduled flush failed: %s', type(exc).__name__)
+            LOG.error('Scheduled flush failed: %s %s', type(exc).__name__, failure_detail(exc))
             return _reply(start_response, 500, b'failed\n')
         return _reply(start_response, 200, b'ok\n')
+
+    if path == '/api/setup':
+        # Visit once after a deploy to register the Bale webhook right away.
+        if method != 'GET':
+            return _reply(start_response, 405, b'method not allowed\n')
+        try:
+            result = ensure_webhook(cron_route.load_config())
+        except Exception as exc:
+            LOG.error('Webhook setup failed: %s %s', type(exc).__name__, failure_detail(exc))
+            return _reply(start_response, 500, b'webhook setup failed; see logs\n')
+        return _reply(start_response, 200, f'webhook {result}\n'.encode())
 
     return _reply(start_response, 404, b'not found\n')

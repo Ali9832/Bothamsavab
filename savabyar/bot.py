@@ -1,4 +1,3 @@
-"""Savabyar: three intentions, Bale wallet invoices and anonymous receipts."""
 
 import argparse
 import json
@@ -46,6 +45,14 @@ INTRO = (
 )
 
 
+def vercel_production_url():
+    """Stable production domain Vercel assigns to this project, if any."""
+    if os.getenv('VERCEL_ENV') != 'production':
+        return ''
+    host = os.getenv('VERCEL_PROJECT_PRODUCTION_URL', '').strip().strip('/')
+    return f'https://{host}' if host else ''
+
+
 @dataclass(frozen=True)
 class Config:
     token: str
@@ -89,7 +96,7 @@ class Config:
             provider=os.getenv('PAYMENT_PROVIDER_TOKEN', '').strip(),
             channel=os.getenv('RECEIPT_CHANNEL', '').strip(),
             username=os.getenv('BOT_USERNAME', 'savabyarbot').strip().lstrip('@'),
-            webhook_url=os.getenv('WEBHOOK_URL', '').strip(),
+            webhook_url=os.getenv('WEBHOOK_URL', '').strip() or vercel_production_url(),
             webhook_secret=os.getenv('WEBHOOK_SECRET', '').strip(),
             minimum=int(os.getenv('MIN_AMOUNT_TOMAN', '1000')),
             maximum=int(os.getenv('MAX_AMOUNT_TOMAN', '10000000')),
@@ -103,6 +110,10 @@ class Config:
             admin_password_hash=encoded,
             admin_session_minutes=int(os.getenv('ADMIN_SESSION_MINUTES', '15')),
         )
+        if os.getenv('VERCEL') and not cfg.database_url:
+            # Vercel's filesystem is read-only: never fall back to SQLite there.
+            raise ValueError('DATABASE_URL is not set in the Vercel environment variables '
+                             '(Production); redeploy after adding it.')
         if not cfg.token:
             raise ValueError('توکن ثواب‌یار را در savabyar/.env وارد کنید: BOT_TOKEN')
         if not cfg.provider or not cfg.channel:
