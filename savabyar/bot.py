@@ -1,3 +1,4 @@
+"""Savabyar: three intentions, Bale wallet invoices and anonymous receipts."""
 
 import argparse
 import json
