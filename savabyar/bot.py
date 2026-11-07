@@ -1,4 +1,3 @@
-"""Savabyar: three intentions, Bale wallet invoices and anonymous receipts."""
 
 import argparse
 import json
@@ -288,12 +287,23 @@ class SavabyarBot:
             self.store.remember_screen(chat_id, message['message_id'], str(message.get('text') or ''),
                                        message.get('reply_markup') or {'inline_keyboard': []})
 
-    def show_screen(self, chat_id, text, *, reply_markup=None, message=None):
+    def show_screen(self, chat_id, text, *, reply_markup=None, message=None, fresh=False):
         """All navigation uses one persistent UI message; financial notices use send()."""
         keyboard = reply_markup if reply_markup is not None else {'inline_keyboard': []}
         if message:
             self.track_screen(chat_id, message)
         screen = self.store.ui_screen(chat_id)
+        if screen and fresh:
+            # /start: the old message may have been deleted from the chat, so
+            # always send a new one and retire the previous best-effort.
+            result = self.send(chat_id, text, reply_markup=keyboard)
+            self.store.remember_screen(chat_id, result['message_id'], text, keyboard)
+            try:
+                self.api.call('deleteMessage', request_timeout=5, chat_id=chat_id,
+                              message_id=screen['message_id'])
+            except APIError:
+                pass
+            return
         if screen:
             if screen['text'] == text and screen['reply_markup'] == keyboard:
                 return
@@ -314,13 +324,13 @@ class SavabyarBot:
         result = self.send(chat_id, text, reply_markup=keyboard)
         self.store.remember_screen(chat_id, result['message_id'], text, keyboard)
 
-    def show_menu(self, chat_id):
+    def show_menu(self, chat_id, *, fresh=False):
         prefix = '🧪 حالت آزمایشی؛ پرداخت‌ها واقعی نیستند.\n\n' if self.cfg.is_test else ''
         intro = INTRO
         if self.cfg.miniapp_url:
             intro = intro.replace('پس از انتخاب نیت، مبلغ دلخواه را به تومان وارد کنید و از طریق کیف پول بله بپردازید.',
                                   'با انتخاب نیت، صفحه مشارکت داخل بله باز می‌شود. مبلغ دلخواه را در آن صفحه به تومان وارد کنید و «ادامه پرداخت» را بزنید.')
-        self.show_screen(chat_id, prefix + intro, reply_markup=menu(self.cfg.miniapp_url))
+        self.show_screen(chat_id, prefix + intro, reply_markup=menu(self.cfg.miniapp_url), fresh=fresh)
 
     def validate_channel(self, bot_id=None):
         if bot_id is None:
@@ -400,7 +410,7 @@ class SavabyarBot:
         if command in {'/start', '/help', '/cancel'}:
             self.store.clear_session(user_id)
             self.store.clear_admin_session(user_id)
-            self.show_menu(chat['id'])
+            self.show_menu(chat['id'], fresh=True)
             return
         from admin_panel import handle_message
         if handle_message(self, message):
